@@ -37,6 +37,11 @@ namespace System.Threading
             Create(maximumSignalCount);
         }
 
+        /// <summary>
+        /// spinner: Thread.SpinWait
+        /// waiter: Win32 IO Completion Ports
+        /// 默认使用 Thread.SpinWait
+        /// </summary>
         public bool Wait(int timeoutMs, bool spinWait)
         {
             Debug.Assert(timeoutMs >= -1);
@@ -47,6 +52,7 @@ namespace System.Threading
             // a) register as a spinner if spinCount > 0 and timeoutMs > 0
             // b) register as a waiter if there's already too many spinners or spinCount == 0 and timeoutMs > 0
             // c) bail out if timeoutMs == 0 and return false
+
             Counts counts = _separated._counts;
             while (true)
             {
@@ -78,6 +84,7 @@ namespace System.Threading
                     }
                     if (newCounts.WaiterCount != counts.WaiterCount)
                     {
+                        //Win32 IO Completion Ports
                         return WaitForSignal(timeoutMs);
                     }
                     if (timeoutMs == 0)
@@ -95,9 +102,12 @@ namespace System.Threading
             spinCount *= 2;
 #endif
             int processorCount = Environment.ProcessorCount;
+            //spinIndex is SpinWait iterations
             int spinIndex = processorCount > 1 ? 0 : SpinSleep0Threshold;
             while (spinIndex < spinCount)
             {
+                //Thread.SpinWait
+                //q: 如何确定等待时间 timeoutMs？
                 LowLevelSpinWaiter.Wait(spinIndex, SpinSleep0Threshold, processorCount);
                 spinIndex++;
 
@@ -193,6 +203,11 @@ namespace System.Threading
             }
         }
 
+        /// <summary>
+        /// 使用 Win32 IO Completion Ports
+        /// </summary>
+        /// <param name="timeoutMs">The timeout ms.</param>
+        /// <returns></returns>
         private bool WaitForSignal(int timeoutMs)
         {
             Debug.Assert(timeoutMs > 0 || timeoutMs == -1);

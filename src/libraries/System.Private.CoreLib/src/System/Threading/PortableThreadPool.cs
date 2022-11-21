@@ -28,8 +28,14 @@ namespace System.Threading
         private const int CpuUtilizationHigh = 95;
         private const int CpuUtilizationLow = 80;
 
+        /// <summary>
+        /// AppContext System.Threading.ThreadPool.MinThreads
+        /// </summary>
         private static readonly short ForcedMinWorkerThreads =
             AppContextConfigHelper.GetInt16Config("System.Threading.ThreadPool.MinThreads", 0, false);
+        /// <summary>
+        /// AppContext System.Threading.ThreadPool.MaxThreads
+        /// </summary>
         private static readonly short ForcedMaxWorkerThreads =
             AppContextConfigHelper.GetInt16Config("System.Threading.ThreadPool.MaxThreads", 0, false);
 
@@ -39,16 +45,31 @@ namespace System.Threading
 #pragma warning disable IDE1006 // Naming Styles
         // The singleton must be initialized after the static variables above, as the constructor may be dependent on them.
         // SOS's ThreadPool command depends on this name.
+        /// <summary>
+        /// ThreadPool 单例
+        /// </summary>
         public static readonly PortableThreadPool ThreadPoolInstance = new PortableThreadPool();
 #pragma warning restore IDE1006 // Naming Styles
 
         private int _cpuUtilization; // SOS's ThreadPool command depends on this name
+        /// <summary>
+        /// ThreadPool.SetMinThreads()
+        /// </summary>
         private short _minThreads;
+        /// <summary>
+        /// ThreadPool.SetMaxThreads()
+        /// </summary>
         private short _maxThreads;
 
+        /// <summary>
+        /// 计数器
+        /// </summary>
         [StructLayout(LayoutKind.Explicit, Size = Internal.PaddingHelpers.CACHE_LINE_SIZE * 6)]
         private struct CacheLineSeparated
         {
+            /// <summary>
+            /// 不同状态的线程数量的信息
+            /// </summary>
             [FieldOffset(Internal.PaddingHelpers.CACHE_LINE_SIZE * 1)]
             public ThreadCounts counts; // SOS's ThreadPool command depends on this name
 
@@ -62,6 +83,9 @@ namespace System.Threading
             [FieldOffset(Internal.PaddingHelpers.CACHE_LINE_SIZE * 3 + sizeof(int) * 2)]
             public int nextCompletedWorkRequestsTime;
 
+            /// <summary>
+            /// 请求的数量
+            /// </summary>
             [FieldOffset(Internal.PaddingHelpers.CACHE_LINE_SIZE * 4)]
             public volatile int numRequestedWorkers;
             [FieldOffset(Internal.PaddingHelpers.CACHE_LINE_SIZE * 4 + sizeof(int))]
@@ -72,6 +96,9 @@ namespace System.Threading
         private readonly ThreadInt64PersistentCounter _completionCounter = new ThreadInt64PersistentCounter();
         private int _threadAdjustmentIntervalMs;
 
+        /// <summary>
+        /// 阻塞线程数量
+        /// </summary>
         private short _numBlockedThreads;
         private short _numThreadsAddedDueToBlocking;
         private PendingBlockingAdjustment _pendingBlockingAdjustment;
@@ -81,6 +108,9 @@ namespace System.Threading
 
         private readonly LowLevelLock _threadAdjustmentLock = new LowLevelLock();
 
+        /// <summary>
+        /// 计数器
+        /// </summary>
         private CacheLineSeparated _separated; // SOS's ThreadPool command depends on this name
 
         private PortableThreadPool()
@@ -104,6 +134,12 @@ namespace System.Threading
             _separated.counts.NumThreadsGoal = _minThreads;
         }
 
+        /// <summary>
+        /// Sets the minimum threads.
+        /// </summary>
+        /// <param name="workerThreads">The worker threads.</param>
+        /// <param name="ioCompletionThreads">The io completion threads.</param>
+        /// <returns></returns>
         public bool SetMinThreads(int workerThreads, int ioCompletionThreads)
         {
             if (workerThreads < 0 || ioCompletionThreads < 0)
@@ -124,6 +160,7 @@ namespace System.Threading
 
                 ThreadPool.SetMinIOCompletionThreads(ioCompletionThreads);
 
+                //设置了 AppContext 则跳出
                 if (ForcedMinWorkerThreads != 0)
                 {
                     return true;
@@ -131,6 +168,8 @@ namespace System.Threading
 
                 short newMinThreads = (short)Math.Max(1, Math.Min(workerThreads, MaxPossibleThreadCount));
                 _minThreads = newMinThreads;
+
+                //尝试创建线程补充到最小数量
                 if (_numBlockedThreads > 0)
                 {
                     // Blocking adjustment will adjust the goal according to its heuristics
@@ -232,6 +271,11 @@ namespace System.Threading
             return threadLocalCompletionCountObject;
         }
 
+        /// <summary>
+        /// 通知任务完成，并调整 MaxWorkers
+        /// </summary>
+        /// <param name="threadLocalCompletionCountObject">The thread local completion count object.</param>
+        /// <param name="currentTimeMs">The current time ms.</param>
         private void NotifyWorkItemProgress(object threadLocalCompletionCountObject, int currentTimeMs)
         {
             ThreadInt64PersistentCounter.Increment(threadLocalCompletionCountObject);
@@ -258,6 +302,9 @@ namespace System.Threading
         // This method must only be called if ShouldAdjustMaxWorkersActive has returned true, *and*
         // _hillClimbingThreadAdjustmentLock is held.
         //
+        /// <summary>
+        /// 调整最大有效线程数量，通过 HillClimbing 控制新增线程时间间隔
+        /// </summary>
         private void AdjustMaxWorkersActive()
         {
             LowLevelLock threadAdjustmentLock = _threadAdjustmentLock;
@@ -284,7 +331,7 @@ namespace System.Threading
                 long freq = Stopwatch.Frequency;
 
                 double elapsedSeconds = (double)(endTime - startTime) / freq;
-
+                //控制线程新增的频率
                 if (elapsedSeconds * 1000 >= _threadAdjustmentIntervalMs / 2)
                 {
                     int currentTicks = Environment.TickCount;
@@ -328,6 +375,11 @@ namespace System.Threading
             }
         }
 
+        /// <summary>
+        /// 是否需要调整最大有效线程数量
+        /// </summary>
+        /// <param name="currentTimeMs">The current time ms.</param>
+        /// <returns></returns>
         private bool ShouldAdjustMaxWorkersActive(int currentTimeMs)
         {
             if (HillClimbing.IsDisabled)

@@ -25,19 +25,32 @@ namespace System.Threading
 {
     internal sealed partial class ThreadPoolWorkQueue
     {
+        #region WorkStealingQueueList
+
+        /// <summary>
+        /// 本地队列列表，与线程绑定
+        /// </summary>
         internal static class WorkStealingQueueList
         {
 #pragma warning disable CA1825 // avoid the extra generic instantation for Array.Empty<T>(); this is the only place we'll ever create this array
             private static volatile WorkStealingQueue[] _queues = new WorkStealingQueue[0];
 #pragma warning restore CA1825
 
+            /// <summary>
+            /// 所有线程本地队列
+            /// </summary>
             public static WorkStealingQueue[] Queues => _queues;
 
+            /// <summary>
+            /// 添加一个队列，ThreadPoolWorkQueueThreadLocals 创建时调用
+            /// </summary>
+            /// <param name="queue"></param>
             public static void Add(WorkStealingQueue queue)
             {
                 Debug.Assert(queue != null);
                 while (true)
                 {
+                    //所以创建线程还有额外 WorkStealingQueue 开销
                     WorkStealingQueue[] oldQueues = _queues;
                     Debug.Assert(Array.IndexOf(oldQueues, queue) == -1);
 
@@ -91,11 +104,20 @@ namespace System.Threading
                 }
             }
         }
+        #endregion
 
+        #region WorkStealingQueue
+
+        /// <summary>
+        /// 线程本地队列，Array，内有头尾指针
+        /// </summary>
         internal sealed class WorkStealingQueue
         {
             private const int INITIAL_SIZE = 32;
             internal volatile object?[] m_array = new object[INITIAL_SIZE]; // SOS's ThreadPool command depends on this name
+            /// <summary>
+            /// 数组容量 -1
+            /// </summary>
             private volatile int m_mask = INITIAL_SIZE - 1;
 
 #if DEBUG
@@ -110,6 +132,10 @@ namespace System.Threading
 
             private SpinLock m_foreignLock = new SpinLock(enableThreadOwnerTracking: false);
 
+            /// <summary>
+            /// Work 入队
+            /// </summary>
+            /// <param name="obj"></param>
             public void LocalPush(object obj)
             {
                 int tail = m_tailIndex;
@@ -120,6 +146,7 @@ namespace System.Threading
                     tail = LocalPush_HandleTailOverflow();
                 }
 
+                //存在两个空位直接插入，较小的并发冲突？
                 // When there are at least 2 elements' worth of space, we can take the fast path.
                 if (tail < m_headIndex + m_mask)
                 {
@@ -128,6 +155,7 @@ namespace System.Threading
                 }
                 else
                 {
+                    //不足两个空位时扩容，容量翻倍
                     // We need to contend with foreign pops, so we lock.
                     bool lockTaken = false;
                     try
@@ -141,7 +169,8 @@ namespace System.Threading
                         if (count >= m_mask)
                         {
                             // We're full; expand the queue by doubling its size.
-                            var newArray = new object?[m_array.Length << 1];
+                            var newArray = new object?[m_array.Length << 1]; //q: 位移负数如何处理？Array.MaxLength => 0X7FFFFFC7;
+                                                                             // will throw OutOfMemoryException
                             for (int i = 0; i < m_array.Length; i++)
                                 newArray[i] = m_array[(i + head) & m_mask];
 
@@ -149,7 +178,7 @@ namespace System.Threading
                             m_array = newArray;
                             m_headIndex = 0;
                             m_tailIndex = tail = count;
-                            m_mask = (m_mask << 1) | 1;
+                            m_mask = (m_mask << 1) | 1; //m_mask 为数组容量减1，翻倍之后差2，所以此处加1
                         }
 
                         Volatile.Write(ref m_array[tail & m_mask], obj);
@@ -163,6 +192,10 @@ namespace System.Threading
                 }
             }
 
+            /// <summary>
+            /// 尾部溢出重置头尾指针，m_tailIndex == int.MaxValue
+            /// </summary>
+            /// <returns></returns>
             [MethodImpl(MethodImplOptions.NoInlining)]
             private int LocalPush_HandleTailOverflow()
             {
@@ -183,7 +216,8 @@ namespace System.Threading
                         // bits are set, so all of the bits we're keeping will also be set.  Thus it's impossible
                         // for the head to end up > than the tail, since you can't set any more bits than all of
                         // them.
-                        //
+
+                        // 头尾指针使用掩码重置
                         m_headIndex &= m_mask;
                         m_tailIndex = tail = m_tailIndex & m_mask;
                         Debug.Assert(m_headIndex <= m_tailIndex);
@@ -254,6 +288,10 @@ namespace System.Threading
                 return false;
             }
 
+            /// <summary>
+            /// 线程本地队列获取任务，从队尾取
+            /// </summary>
+            /// <returns></returns>
             public object? LocalPop() => m_headIndex < m_tailIndex ? LocalPopCore() : null;
 
             private object? LocalPopCore()
@@ -268,13 +306,14 @@ namespace System.Threading
 
                     // Decrement the tail using a fence to ensure subsequent read doesn't come before.
                     tail--;
-                    Interlocked.Exchange(ref m_tailIndex, tail);
+                    //使用栅栏来确保 m_headIndex 的读取不会出现在前面。
+                    Interlocked.Exchange(ref m_tailIndex, tail);//q: 为什么不使用 Interlocked.Increment
 
                     // If there is no interaction with a take, we can head down the fast path.
                     if (m_headIndex <= tail)
                     {
                         int idx = tail & m_mask;
-                        object? obj = Volatile.Read(ref m_array[idx]);
+                        object? obj = Volatile.Read(ref m_array[idx]);//局部变量内存屏使用 Volatile
 
                         // Check for nulls in the array.
                         if (obj == null) continue;
@@ -288,6 +327,7 @@ namespace System.Threading
                         bool lockTaken = false;
                         try
                         {
+                            //偷窃 TrySteal 时会产生并发，只在临界条件处加锁
                             m_foreignLock.Enter(ref lockTaken);
 
                             if (m_headIndex <= tail)
@@ -305,6 +345,7 @@ namespace System.Threading
                             else
                             {
                                 // If we encountered a race condition and element was stolen, restore the tail.
+                                //如果我们遇到竞态条件，元素被偷，恢复尾部。
                                 m_tailIndex = tail + 1;
                                 return null;
                             }
@@ -320,6 +361,12 @@ namespace System.Threading
 
             public bool CanSteal => m_headIndex < m_tailIndex;
 
+            /// <summary>
+            /// 窃取任务，从队头取
+            /// <para>missedSteal 争抢冲突时赋值 true</para>
+            /// </summary>
+            /// <param name="missedSteal">偷窃失败，争抢冲突时赋值 true</param>
+            /// <returns></returns>
             public object? TrySteal(ref bool missedSteal)
             {
                 while (true)
@@ -333,6 +380,7 @@ namespace System.Threading
                             if (taken)
                             {
                                 // Increment head, and ensure read of tail doesn't move before it (fence).
+                                //使用栅栏来确保 m_tailIndex 的读取不会出现在前面。
                                 int head = m_headIndex;
                                 Interlocked.Exchange(ref m_headIndex, head + 1);
 
@@ -360,6 +408,7 @@ namespace System.Threading
                                 m_foreignLock.Exit(useMemoryBarrier: false);
                         }
 
+                        //争抢冲突（失败）时赋值 true
                         missedSteal = true;
                     }
 
@@ -387,10 +436,18 @@ namespace System.Threading
                 }
             }
         }
+        #endregion
 
         internal bool loggingEnabled;
         private bool _dispatchTimeSensitiveWorkFirst;
+
+        /// <summary>
+        /// 全局队列 ConcurrentQueue
+        /// </summary>
         internal readonly ConcurrentQueue<object> workItems = new ConcurrentQueue<object>(); // SOS's ThreadPool command depends on this name
+        /// <summary>
+        /// 时间敏感任务队列
+        /// </summary>
         internal readonly ConcurrentQueue<IThreadPoolWorkItem>? timeSensitiveWorkQueue =
             ThreadPool.SupportsTimeSensitiveWorkItems ? new ConcurrentQueue<IThreadPoolWorkItem>() : null;
 
@@ -399,6 +456,9 @@ namespace System.Threading
         {
             private readonly Internal.PaddingFor32 pad1;
 
+            /// <summary>
+            /// 未完成的线程请求数量
+            /// </summary>
             public volatile int numOutstandingThreadRequests;
 
             private readonly Internal.PaddingFor32 pad2;
@@ -443,6 +503,9 @@ namespace System.Threading
             loggingEnabled = FrameworkEventSource.Log.IsEnabled(EventLevel.Verbose, FrameworkEventSource.Keywords.ThreadPool | FrameworkEventSource.Keywords.ThreadTransfer);
         }
 
+        /// <summary>
+        /// 增加 未完成的线程请求数量
+        /// </summary>
         internal void EnsureThreadRequested()
         {
             //
@@ -464,6 +527,9 @@ namespace System.Threading
             }
         }
 
+        /// <summary>
+        /// 减少 未完成的线程请求数量
+        /// </summary>
         internal void MarkThreadRequestSatisfied()
         {
             //
@@ -485,6 +551,9 @@ namespace System.Threading
             }
         }
 
+        /// <summary>
+        /// 增加时间敏感 work
+        /// </summary>
         public void EnqueueTimeSensitiveWorkItem(IThreadPoolWorkItem timeSensitiveWorkItem)
         {
             Debug.Assert(ThreadPool.SupportsTimeSensitiveWorkItems);
@@ -498,6 +567,10 @@ namespace System.Threading
             EnsureThreadRequested();
         }
 
+        /// <summary>
+        /// 获取时间敏感 work
+        /// </summary>
+        /// <returns></returns>
         [MethodImpl(MethodImplOptions.NoInlining)]
         public IThreadPoolWorkItem? TryDequeueTimeSensitiveWorkItem()
         {
@@ -521,6 +594,7 @@ namespace System.Threading
 
             if (null != tl)
             {
+                //使用偷窃队列，本地队列
                 tl.workStealingQueue.LocalPush(callback);
             }
             else
@@ -537,15 +611,25 @@ namespace System.Threading
             return tl != null && tl.workStealingQueue.LocalFindAndPop(callback);
         }
 
+        /// <summary>
+        /// 1. 线程本地队列获取
+        /// 2. 全局队列获取
+        /// 3. 从其他线程队列窃取任务
+        /// </summary>
+        /// <param name="tl"></param>
+        /// <param name="missedSteal">偷窃失败，争抢冲突时赋值 true</param>
+        /// <returns></returns>
         public object? Dequeue(ThreadPoolWorkQueueThreadLocals tl, ref bool missedSteal)
         {
             WorkStealingQueue localWsq = tl.workStealingQueue;
             object? callback;
 
+            // localWsq 理论上不会有并发
             if ((callback = localWsq.LocalPop()) == null && // first try the local queue
                 !workItems.TryDequeue(out callback)) // then try the global queue
             {
                 // finally try to steal from another thread's local queue
+                //线程本地队列、全局队列都获取失败，从其他线程队列窃取任务
                 WorkStealingQueue[] queues = WorkStealingQueueList.Queues;
                 int c = queues.Length;
                 Debug.Assert(c > 0, "There must at least be a queue for this thread.");
@@ -553,7 +637,7 @@ namespace System.Threading
                 uint i = tl.random.NextUInt32() % (uint)c;
                 while (c > 0)
                 {
-                    i = (i < maxIndex) ? i + 1 : 0;
+                    i = (i < maxIndex) ? i + 1 : 0;//q: 循环 c 次但是不改变取值的目的是？
                     WorkStealingQueue otherQueue = queues[i];
                     if (otherQueue != localWsq && otherQueue.CanSteal)
                     {
@@ -603,10 +687,11 @@ namespace System.Threading
 
         /// <summary>
         /// Dispatches work items to this thread.
+        /// <para>将工作项分派给此线程。</para>
         /// </summary>
         /// <returns>
-        /// <c>true</c> if this thread did as much work as was available or its quantum expired.
-        /// <c>false</c> if this thread stopped working early.
+        /// <c>true</c> 保留当前线程，线程返回线程池。
+        /// <c>false</c> 不在需要当前线程，释放线程。
         /// </returns>
         internal static bool Dispatch()
         {
@@ -637,7 +722,7 @@ namespace System.Threading
                 //
                 // Use operate on workQueue local to try block so it can be enregistered
                 ThreadPoolWorkQueue workQueue = outerWorkQueue;
-                ThreadPoolWorkQueueThreadLocals tl = workQueue.GetOrCreateThreadLocals();
+                ThreadPoolWorkQueueThreadLocals tl = workQueue.GetOrCreateThreadLocals();//仅在此处创建 ThreadPoolWorkQueueThreadLocals
                 object? threadLocalCompletionCountObject = tl.threadLocalCompletionCountObject;
                 Thread currentThread = tl.currentThread;
 
@@ -658,6 +743,8 @@ namespace System.Threading
                     // get a chance to run in situations where worker threads are starved and work items that run also take over
                     // the thread, sustaining starvation. For example, if time-sensitive work is always checked last here, timer
                     // callbacks may not run when worker threads are continually starved.
+
+                    //在先检查时间敏感的工作或其他工作之间交替进行，保证线程饥饿时定时器能有机会被执行
                     bool dispatchTimeSensitiveWorkFirst = workQueue._dispatchTimeSensitiveWorkFirst;
                     workQueue._dispatchTimeSensitiveWorkFirst = !dispatchTimeSensitiveWorkFirst;
                     if (dispatchTimeSensitiveWorkFirst)
@@ -674,11 +761,12 @@ namespace System.Threading
                 {
                     if (workItem == null)
                     {
-                        bool missedSteal = false;
+                        bool missedSteal = false;//是否偷窃失败，争抢冲突时赋值 true
                         // Operate on 'workQueue' instead of 'outerWorkQueue', as 'workQueue' is local to the try block and it
                         // may be enregistered
                         workItem = workQueue.Dequeue(tl, ref missedSteal);
 
+                        //不存在需要执行的任务
                         if (workItem == null)
                         {
                             //
@@ -687,7 +775,7 @@ namespace System.Threading
                             // Instead of looping around and trying again, we'll just request another thread.  Hopefully the thread
                             // that owns the contended work-stealing queue will pick up its own workitems in the meantime,
                             // which will be more efficient than this thread doing it anyway.
-                            //
+                            // 窃取失败说明被窃取任务由原线程处理
                             needAnotherThread = missedSteal;
 
                             // Tell the VM we're returning normally, not because Hill Climbing asked us to return.
@@ -740,7 +828,7 @@ namespace System.Threading
                     // us to return the thread to the pool or not.
                     //
                     int currentTickCount = Environment.TickCount;
-                    if (!ThreadPool.NotifyWorkItemComplete(threadLocalCompletionCountObject, currentTickCount))
+                    if (!ThreadPool.NotifyWorkItemComplete(threadLocalCompletionCountObject, currentTickCount))//q: 梳理一下？线程新增释放逻辑
                     {
                         // This thread is being parked and may remain inactive for a while. Transfer any thread-local work items
                         // to ensure that they would not be heavily delayed.
@@ -749,6 +837,7 @@ namespace System.Threading
                     }
 
                     // Check if the dispatch quantum has expired
+                    // 如果执行时间小于 30ms，则继续执行任务，这是因为大多数机器线程切换大概在 30ms
                     if ((uint)(currentTickCount - startTickCount) < DispatchQuantumMs)
                     {
                         continue;
@@ -761,6 +850,7 @@ namespace System.Threading
                     {
                         // The runtime-specific thread pool implementation does not support managed time-sensitive work, need to
                         // return to the VM to let it perform its own time-sensitive work. Tell the VM we're returning normally.
+                        //runtime-specific 线程池实现不支持托管的时间敏感 work, return true 让 VM 执行时间敏感 work
                         return true;
                     }
 
@@ -824,13 +914,24 @@ namespace System.Threading
         }
     }
 
+    #region ThreadPoolWorkQueueThreadLocals
+
     // Holds a WorkStealingQueue, and removes it from the list when this object is no longer referenced.
+    /// <summary>
+    /// 保持WorkStealingQueue，并在不再引用该对象时将其从列表中移除。
+    /// </summary>
     internal sealed class ThreadPoolWorkQueueThreadLocals
     {
+        /// <summary>
+        /// thread static，lazy 单例
+        /// </summary>
         [ThreadStatic]
         public static ThreadPoolWorkQueueThreadLocals? threadLocals;
 
         public readonly ThreadPoolWorkQueue workQueue;
+        /// <summary>
+        /// 线程本地队列
+        /// </summary>
         public readonly ThreadPoolWorkQueue.WorkStealingQueue workStealingQueue;
         public readonly Thread currentThread;
         public readonly object? threadLocalCompletionCountObject;
@@ -845,6 +946,9 @@ namespace System.Threading
             threadLocalCompletionCountObject = ThreadPool.GetOrCreateThreadLocalCompletionCountObject();
         }
 
+        /// <summary>
+        /// 转移 LocalWork to Global
+        /// </summary>
         public void TransferLocalWork()
         {
             while (workStealingQueue.LocalPop() is object cb)
@@ -863,6 +967,7 @@ namespace System.Threading
             }
         }
     }
+    #endregion
 
     public delegate void WaitCallback(object? state);
 
@@ -1061,6 +1166,9 @@ namespace System.Threading
     {
         internal const string WorkerThreadName = ".NET ThreadPool Worker";
 
+        /// <summary>
+        /// static，工作队列，内有全局队列+本地队列+时间敏感队列
+        /// </summary>
         internal static readonly ThreadPoolWorkQueue s_workQueue = new ThreadPoolWorkQueue();
 
         /// <summary>Shim used to invoke <see cref="IAsyncStateMachineBox.MoveNext"/> of the supplied <see cref="IAsyncStateMachineBox"/>.</summary>
@@ -1201,6 +1309,8 @@ namespace System.Threading
             return RegisterWaitForSingleObject(waitObject, callBack, state, (uint)tm, executeOnlyOnce, false);
         }
 
+        #region 线程池入口
+
         public static bool QueueUserWorkItem(WaitCallback callBack) =>
             QueueUserWorkItem(callBack, null);
 
@@ -1222,6 +1332,14 @@ namespace System.Threading
             return true;
         }
 
+        /// <summary>
+        /// 线程池入口
+        /// </summary>
+        /// <typeparam name="TState">The type of the state.</typeparam>
+        /// <param name="callBack">The call back.</param>
+        /// <param name="state">The state.</param>
+        /// <param name="preferLocal">是否使用本地队列</param>
+        /// <returns></returns>
         public static bool QueueUserWorkItem<TState>(Action<TState> callBack, TState state, bool preferLocal)
         {
             if (callBack == null)
@@ -1255,6 +1373,7 @@ namespace System.Threading
             // internally we call UnsafeQueueUserWorkItemInternal directly for Tasks.
             if (ReferenceEquals(callBack, ThreadPool.s_invokeAsyncStateMachineBox))
             {
+                // 如果是 IAsyncStateMachineBox runtime 内部调用，不需要包装 QueueUserWorkItemCallback
                 if (!(state is IAsyncStateMachineBox))
                 {
                     // The provided state must be the internal IAsyncStateMachineBox (Task) type
@@ -1301,6 +1420,7 @@ namespace System.Threading
             UnsafeQueueUserWorkItemInternal(callBack!, preferLocal);
             return true;
         }
+        #endregion
 
         internal static void UnsafeQueueUserWorkItemInternal(object callBack, bool preferLocal)
         {
@@ -1321,7 +1441,10 @@ namespace System.Threading
             UnsafeQueueUserWorkItemInternal(timeSensitiveWorkItem, preferLocal: false);
 #pragma warning restore CS0162
         }
-
+        /// <summary>
+        /// 增加时间敏感 work
+        /// <remarks>目前用于非托管代码调用和 clr 内部使用</remarks>
+        /// </summary>
         internal static void UnsafeQueueTimeSensitiveWorkItemInternal(IThreadPoolWorkItem timeSensitiveWorkItem) =>
             s_workQueue.EnqueueTimeSensitiveWorkItem(timeSensitiveWorkItem);
 
@@ -1438,6 +1561,7 @@ namespace System.Threading
 
         /// <summary>
         /// Gets the number of work items that are currently queued to be processed.
+        /// <para>排队的数量</para>
         /// </summary>
         /// <remarks>
         /// For a thread pool implementation that may have different types of work items, the count includes all types that can

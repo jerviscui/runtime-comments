@@ -51,6 +51,9 @@ namespace System.Threading
             return false;
         }
 
+        /// <summary>
+        /// สนำร Thread.SpinWait
+        /// </summary>
         public static void Wait(int spinIndex, int sleep0Threshold, int processorCount)
         {
             Debug.Assert(spinIndex >= 0);

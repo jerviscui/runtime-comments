@@ -2258,6 +2258,7 @@ namespace System.Threading.Tasks
         /// use the entry point that's not protected from double-invoke; derived internal tasks
         /// can override to customize their behavior, which is usually done by promises
         /// that want to reuse the same object as a queued work item.
+        /// <para>线程池执行入口</para>
         /// </summary>
         internal virtual void ExecuteFromThreadPool(Thread threadPoolThread) => ExecuteEntryUnsafe(threadPoolThread);
 

@@ -3,6 +3,9 @@
 
 namespace System.Threading
 {
+    /// <summary>
+    /// 提供 Send、Post 操作原语
+    /// </summary>
     public partial class SynchronizationContext
     {
         private bool _requireWaitNotification;

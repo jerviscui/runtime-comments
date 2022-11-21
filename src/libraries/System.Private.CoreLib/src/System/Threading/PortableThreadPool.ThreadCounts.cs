@@ -10,6 +10,7 @@ namespace System.Threading
     {
         /// <summary>
         /// Tracks information on the number of threads we want/have in different states in our thread pool.
+        /// <para>不同状态的线程数量的信息</para>
         /// </summary>
         private struct ThreadCounts
         {
@@ -28,6 +29,7 @@ namespace System.Threading
 
             /// <summary>
             /// Number of threads processing work items.
+            /// <para>执行中的线程数。</para>
             /// </summary>
             public short NumProcessingWork
             {
@@ -46,6 +48,7 @@ namespace System.Threading
 
             /// <summary>
             /// Number of thread pool threads that currently exist.
+            /// <para>当前存在线程数。ThreadPool.ThreadCount</para>
             /// </summary>
             public short NumExistingThreads
             {
@@ -64,6 +67,7 @@ namespace System.Threading
 
             /// <summary>
             /// Max possible thread pool threads we want to have.
+            /// <para>我们想要的线程池线程的最大值。ThreadPool.SetMinThreads()</para>
             /// </summary>
             public short NumThreadsGoal
             {
@@ -80,6 +84,11 @@ namespace System.Threading
                 }
             }
 
+            /// <summary>
+            /// 更新计数器 NumThreadsGoal
+            /// </summary>
+            /// <param name="value">The value.</param>
+            /// <returns></returns>
             public ThreadCounts InterlockedSetNumThreadsGoal(short value)
             {
                 ThreadPoolInstance._threadAdjustmentLock.VerifyIsLocked();

@@ -19,6 +19,7 @@ namespace System.Threading
 
             /// <summary>
             /// Semaphore for controlling how many threads are currently working.
+            /// <para>用于控制同时可以有多少个线程工作，单例</para>
             /// </summary>
             private static readonly LowLevelLifoSemaphore s_semaphore =
                 new LowLevelLifoSemaphore(
@@ -36,6 +37,9 @@ namespace System.Threading
 
             private static readonly ThreadStart s_workerThreadStart = WorkerThreadStart;
 
+            /// <summary>
+            /// 线程的回调方法
+            /// </summary>
             private static void WorkerThreadStart()
             {
                 Thread.CurrentThread.SetThreadPoolWorkerThreadName();
@@ -54,12 +58,14 @@ namespace System.Threading
                 while (true)
                 {
                     bool spinWait = true;
-                    while (semaphore.Wait(ThreadPoolThreadTimeoutMs, spinWait))
+                    while (semaphore.Wait(ThreadPoolThreadTimeoutMs, spinWait))//线程已经启动，但是进行限流？
                     {
                         bool alreadyRemovedWorkingWorker = false;
+                        //获取任务并执行
                         while (TakeActiveRequest(threadPoolInstance))
                         {
                             threadPoolInstance._separated.lastDequeueTime = Environment.TickCount;
+                            //计数器减少时返回 false，退出并且释放当前线程
                             if (!ThreadPoolWorkQueue.Dispatch())
                             {
                                 // ShouldStopProcessingWorkNow() caused the thread to stop processing work, and it would have
@@ -69,6 +75,7 @@ namespace System.Threading
                                 break;
                             }
 
+                            //或者没有 work 时退出
                             if (threadPoolInstance._separated.numRequestedWorkers <= 0)
                             {
                                 break;
@@ -81,9 +88,12 @@ namespace System.Threading
                             // there is a pending request for work, introduce a slight delay before serving the next request.
                             // The spin-wait is mainly for when the sleep is not effective due to there being no other threads
                             // to schedule.
+
+                            //引入一个轻微的延迟，当只有少量 work 时降低锁操作
                             Thread.UninterruptibleSleep0();
                             if (!Environment.IsSingleProcessor)
                             {
+                                //自旋等待主要是为了在 Sleep 无效的情况下
                                 Thread.SpinWait(1);
                             }
                         }
@@ -101,6 +111,7 @@ namespace System.Threading
                         }
                     }
 
+                    //等待超时应结束当前线程
                     threadAdjustmentLock.Acquire();
                     try
                     {
@@ -114,6 +125,8 @@ namespace System.Threading
                             // Since this thread is currently registered as an existing thread, if more work comes in meanwhile,
                             // this thread would be expected to satisfy the new work. Ensure that NumExistingThreads is not
                             // decreased below NumProcessingWork, as that would be indicative of such a case.
+
+                            //如果有足够的工作进来，不应结束线程，让它继续工作减少创建开销
                             if (counts.NumExistingThreads <= counts.NumProcessingWork)
                             {
                                 // In this case, enough work came in that this thread should not time out and should go back to work.
@@ -126,7 +139,7 @@ namespace System.Threading
                                 Math.Max(
                                     threadPoolInstance.MinThreadsGoal,
                                     Math.Min(newNumExistingThreads, counts.NumThreadsGoal));
-                            newCounts.NumThreadsGoal = newNumThreadsGoal;
+                            newCounts.NumThreadsGoal = newNumThreadsGoal;//保证 NumThreadsGoal 不会减少到 NumThreadsGoal 之下
 
                             ThreadCounts oldCounts =
                                 threadPoolInstance._separated.counts.InterlockedCompareExchange(newCounts, counts);
@@ -139,7 +152,7 @@ namespace System.Threading
                                 {
                                     NativeRuntimeEventSource.Log.ThreadPoolWorkerThreadStop((uint)newNumExistingThreads);
                                 }
-                                return;
+                                return; //仅此一处退出，释放当前线程
                             }
 
                             counts = oldCounts;
@@ -154,6 +167,7 @@ namespace System.Threading
 
             /// <summary>
             /// Reduce the number of working workers by one, but maybe add back a worker (possibily this thread) if a thread request comes in while we are marking this thread as not working.
+            /// <para>减少 NumProcessingWork 数量</para>
             /// </summary>
             private static void RemoveWorkingWorker(PortableThreadPool threadPoolInstance)
             {
@@ -185,10 +199,15 @@ namespace System.Threading
                 }
             }
 
+            /// <summary>
+            /// NumProcessingWork 线程数小于 NumThreadsGoal 时创建新线程
+            /// </summary>
+            /// <param name="threadPoolInstance">The thread pool instance.</param>
             internal static void MaybeAddWorkingWorker(PortableThreadPool threadPoolInstance)
             {
                 ThreadCounts counts = threadPoolInstance._separated.counts;
                 short numExistingThreads, numProcessingWork, newNumExistingThreads, newNumProcessingWork;
+                //更新计数器，NumProcessingWork + 1
                 while (true)
                 {
                     numProcessingWork = counts.NumProcessingWork;
@@ -200,10 +219,11 @@ namespace System.Threading
                     newNumProcessingWork = (short)(numProcessingWork + 1);
                     numExistingThreads = counts.NumExistingThreads;
                     newNumExistingThreads = Math.Max(numExistingThreads, newNumProcessingWork);
+                    //q: NumProcessingWork NumExistingThreads 的关系是？
 
                     ThreadCounts newCounts = counts;
-                    newCounts.NumProcessingWork = newNumProcessingWork;
-                    newCounts.NumExistingThreads = newNumExistingThreads;
+                    newCounts.NumProcessingWork = newNumProcessingWork;   //q: 增减逻辑
+                    newCounts.NumExistingThreads = newNumExistingThreads; //q: 增减逻辑
 
                     ThreadCounts oldCounts = threadPoolInstance._separated.counts.InterlockedCompareExchange(newCounts, counts);
 
@@ -220,7 +240,7 @@ namespace System.Threading
 
                 if (toRelease > 0)
                 {
-                    s_semaphore.Release(toRelease);
+                    s_semaphore.Release(toRelease);//通知限流放出一个线程执行任务，WorkerThreadStart() 中使用同一个锁
                 }
 
                 while (toCreate > 0)
@@ -231,6 +251,7 @@ namespace System.Threading
                         continue;
                     }
 
+                    //创建失败时，中断创建流程，整体退出
                     counts = threadPoolInstance._separated.counts;
                     while (true)
                     {
@@ -253,6 +274,7 @@ namespace System.Threading
             /// Returns if the current thread should stop processing work on the thread pool.
             /// A thread should stop processing work on the thread pool when work remains only when
             /// there are more worker threads in the thread pool than we currently want.
+            /// <para>当线程池中 NumProcessingWork 大于 NumThreadsGoal 时，线程应该不再被使用，返回 true 并更新计数器。</para>
             /// </summary>
             /// <returns>Whether or not this thread should stop processing work even if there is still work in the queue.</returns>
             internal static bool ShouldStopProcessingWorkNow(PortableThreadPool threadPoolInstance)
@@ -285,6 +307,11 @@ namespace System.Threading
                 }
             }
 
+            /// <summary>
+            /// 减少 请求的数量 numRequestedWorkers
+            /// </summary>
+            /// <param name="threadPoolInstance">The thread pool instance.</param>
+            /// <returns>numRequestedWorkers 为0 时返回 false</returns>
             private static bool TakeActiveRequest(PortableThreadPool threadPoolInstance)
             {
                 int count = threadPoolInstance._separated.numRequestedWorkers;
@@ -300,6 +327,10 @@ namespace System.Threading
                 return false;
             }
 
+            /// <summary>
+            /// 创建新线程
+            /// </summary>
+            /// <returns>异常时返回 false</returns>
             private static bool TryCreateWorkerThread()
             {
                 try

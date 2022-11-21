@@ -41,6 +41,11 @@ namespace System.Threading
             }
         }
 
+        /// <summary>
+        /// สนำร Win32 IO Completion Ports
+        /// </summary>
+        /// <param name="timeoutMs">The timeout ms.</param>
+        /// <returns></returns>
         public bool WaitCore(int timeoutMs)
         {
             Debug.Assert(timeoutMs >= -1);

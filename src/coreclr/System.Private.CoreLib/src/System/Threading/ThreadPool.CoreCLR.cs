@@ -12,7 +12,6 @@
 
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
-using System.Runtime.ConstrainedExecution;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 
@@ -234,9 +233,17 @@ namespace System.Threading
                 ? AppContextConfigHelper.GetBooleanConfig("System.Threading.ThreadPool.EnableWorkerTracking", false)
                 : GetEnableWorkerTrackingNative();
 
+        /// <summary>
+        /// 是否允许设置 IOCompletionThreads
+        /// </summary>
+        /// <param name="ioCompletionThreads"></param>
         [MethodImpl(MethodImplOptions.InternalCall)]
         internal static extern bool CanSetMinIOCompletionThreads(int ioCompletionThreads);
 
+        /// <summary>
+        /// 通过 Native Thread，SetMinThreadsNative
+        /// </summary>
+        /// <param name="ioCompletionThreads"></param>
         internal static void SetMinIOCompletionThreads(int ioCompletionThreads)
         {
             Debug.Assert(UsePortableThreadPool);
@@ -246,9 +253,17 @@ namespace System.Threading
             Debug.Assert(success);
         }
 
+        /// <summary>
+        /// 是否允许设置 IOCompletionThreads
+        /// </summary>
+        /// <param name="ioCompletionThreads"></param>
         [MethodImpl(MethodImplOptions.InternalCall)]
         internal static extern bool CanSetMaxIOCompletionThreads(int ioCompletionThreads);
 
+        /// <summary>
+        /// 通过 Native Thread，SetMaxThreadsNative
+        /// </summary>
+        /// <param name="ioCompletionThreads"></param>
         internal static void SetMaxIOCompletionThreads(int ioCompletionThreads)
         {
             Debug.Assert(UsePortableThreadPool);
@@ -413,6 +428,7 @@ namespace System.Threading
 
         internal static void RequestWorkerThread()
         {
+            //使用可移植线程池
             if (UsePortableThreadPool)
             {
                 PortableThreadPool.ThreadPoolInstance.RequestWorker();
@@ -478,6 +494,9 @@ namespace System.Threading
         [MethodImpl(MethodImplOptions.InternalCall)]
         private static extern void GetAvailableThreadsNative(out int workerThreads, out int completionPortThreads);
 
+        /// <summary>
+        /// 通知 VM 任务执行完成。同时也用于询问 HillClimbing 是否将线程返回到线程池。
+        /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal static bool NotifyWorkItemComplete(object? threadLocalCompletionCountObject, int currentTimeMs)
         {

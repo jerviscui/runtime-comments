@@ -22,6 +22,9 @@ namespace System.Threading
 
     internal delegate void ContextCallback<TState>(ref TState state);
 
+    /// <summary>
+    /// 存储 IAsyncLocal 等
+    /// </summary>
     public sealed class ExecutionContext : IDisposable, ISerializable
     {
         internal static readonly ExecutionContext Default = new ExecutionContext();
@@ -328,8 +331,11 @@ namespace System.Threading
             }
         }
 
-        // Inline as only called in one place and always called
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        /// <summary>
+        /// 重置线程的 ExecutionCtx 和 SyncCtx
+        /// </summary>
+        /// <param name="currentThread">The current thread.</param>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] // Inline as only called in one place and always called
         internal static void ResetThreadPoolThread(Thread currentThread)
         {
             ExecutionContext? currentExecutionCtx = currentThread._executionContext;
