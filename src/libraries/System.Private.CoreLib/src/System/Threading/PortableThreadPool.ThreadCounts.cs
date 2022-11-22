@@ -67,9 +67,9 @@ namespace System.Threading
 
             /// <summary>
             /// Max possible thread pool threads we want to have.
-            /// <para>我们想要的线程池线程的最大值。ThreadPool.SetMinThreads()</para>
+            /// <para>我们想要的线程池线程的最大值。初始值 ThreadPool.SetMinThreads()</para>
             /// </summary>
-            public short NumThreadsGoal
+            public short NumThreadsGoal //q: 增减逻辑
             {
                 get
                 {

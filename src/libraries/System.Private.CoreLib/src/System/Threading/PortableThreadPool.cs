@@ -39,6 +39,9 @@ namespace System.Threading
         private static readonly short ForcedMaxWorkerThreads =
             AppContextConfigHelper.GetInt16Config("System.Threading.ThreadPool.MaxThreads", 0, false);
 
+        /// <summary>
+        /// ThreadStatic，当前线程的 ThreadLocalNode
+        /// </summary>
         [ThreadStatic]
         private static object? t_completionCountObject;
 
@@ -93,11 +96,14 @@ namespace System.Threading
         }
 
         private long _currentSampleStartTime;
+        /// <summary>
+        /// The completion counter，持有 ThreadLocalNode 列表
+        /// </summary>
         private readonly ThreadInt64PersistentCounter _completionCounter = new ThreadInt64PersistentCounter();
         private int _threadAdjustmentIntervalMs;
 
         /// <summary>
-        /// 阻塞线程数量
+        /// 阻塞线程数量，q: 使用的场景？
         /// </summary>
         private short _numBlockedThreads;
         private short _numThreadsAddedDueToBlocking;
@@ -272,7 +278,7 @@ namespace System.Threading
         }
 
         /// <summary>
-        /// 通知任务完成，并调整 MaxWorkers
+        /// 更新线程的任务计数器，并调整 MaxWorkers
         /// </summary>
         /// <param name="threadLocalCompletionCountObject">The thread local completion count object.</param>
         /// <param name="currentTimeMs">The current time ms.</param>
@@ -290,6 +296,11 @@ namespace System.Threading
         internal void NotifyWorkItemProgress() =>
             NotifyWorkItemProgress(GetOrCreateThreadLocalCompletionCountObject(), Environment.TickCount);
 
+        /// <summary>
+        /// 通知 VM 任务执行完成。
+        /// 并且检查线程是否应该被释放。
+        /// </summary>
+        /// <returns>返回 false 表示线程不应再被使用</returns>
         internal bool NotifyWorkItemComplete(object? threadLocalCompletionCountObject, int currentTimeMs)
         {
             Debug.Assert(threadLocalCompletionCountObject != null);
@@ -303,7 +314,7 @@ namespace System.Threading
         // _hillClimbingThreadAdjustmentLock is held.
         //
         /// <summary>
-        /// 调整最大有效线程数量，通过 HillClimbing 控制新增线程时间间隔
+        /// 调整最大有效线程数量 NumThreadsGoal，通过 HillClimbing 控制新增线程时间间隔
         /// </summary>
         private void AdjustMaxWorkersActive()
         {
@@ -324,7 +335,6 @@ namespace System.Threading
                 {
                     return;
                 }
-
 
                 long startTime = _currentSampleStartTime;
                 long endTime = Stopwatch.GetTimestamp();
@@ -414,9 +424,13 @@ namespace System.Threading
 
             // Skip hill climbing when there is a pending blocking adjustment. Hill climbing may otherwise bypass the
             // blocking adjustment heuristics and increase the thread count too quickly.
+            //当有一个待定的阻塞调整时，跳过爬坡。
             return _pendingBlockingAdjustment == PendingBlockingAdjustment.None;
         }
 
+        /// <summary>
+        /// 请求工作线程
+        /// </summary>
         internal void RequestWorker()
         {
             // The order of operations here is important. MaybeAddWorkingWorker() and EnsureRunning() use speculative checks to

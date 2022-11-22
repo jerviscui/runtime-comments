@@ -934,6 +934,9 @@ namespace System.Threading
         /// </summary>
         public readonly ThreadPoolWorkQueue.WorkStealingQueue workStealingQueue;
         public readonly Thread currentThread;
+        /// <summary>
+        /// 当前线程的 ThreadLocalNode，不使用可移植线程池时为 null
+        /// </summary>
         public readonly object? threadLocalCompletionCountObject;
         public readonly Random.XoshiroImpl random = new Random.XoshiroImpl();
 

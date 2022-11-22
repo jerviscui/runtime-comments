@@ -7,6 +7,12 @@ namespace System.Threading
 {
     internal sealed partial class PortableThreadPool
     {
+        /// <summary>
+        /// NumThreadsGoal 和 _minThreads + _numBlockedThreads 中的较小值
+        /// </summary>
+        /// <value>
+        /// The minimum threads goal.
+        /// </value>
         public short MinThreadsGoal
         {
             get
@@ -252,7 +258,13 @@ namespace System.Threading
         private enum PendingBlockingAdjustment : byte
         {
             None,
+            /// <summary>
+            /// 立即
+            /// </summary>
             Immediately,
+            /// <summary>
+            /// 延迟
+            /// </summary>
             WithDelayIfNecessary
         }
 

@@ -103,6 +103,7 @@ namespace System.Threading
                         // the semaphore would be released within the spin-wait window
                         spinWait = !alreadyRemovedWorkingWorker;
 
+                        //如果已经在 Dispatch 更新了计数器不再重复更新
                         if (!alreadyRemovedWorkingWorker)
                         {
                             // If we woke up but couldn't find a request, or ran out of work items to process, we need to update
@@ -135,11 +136,12 @@ namespace System.Threading
 
                             ThreadCounts newCounts = counts;
                             short newNumExistingThreads = --newCounts.NumExistingThreads;
+                            //保证 NumThreadsGoal 不会减少到 _minThreads 之下
                             short newNumThreadsGoal =
                                 Math.Max(
                                     threadPoolInstance.MinThreadsGoal,
                                     Math.Min(newNumExistingThreads, counts.NumThreadsGoal));
-                            newCounts.NumThreadsGoal = newNumThreadsGoal;//保证 NumThreadsGoal 不会减少到 NumThreadsGoal 之下
+                            newCounts.NumThreadsGoal = newNumThreadsGoal;
 
                             ThreadCounts oldCounts =
                                 threadPoolInstance._separated.counts.InterlockedCompareExchange(newCounts, counts);
@@ -211,6 +213,7 @@ namespace System.Threading
                 while (true)
                 {
                     numProcessingWork = counts.NumProcessingWork;
+                    //NumProcessingWork 线程数小于 NumThreadsGoal 时才创建新线程
                     if (numProcessingWork >= counts.NumThreadsGoal)
                     {
                         return;
@@ -219,7 +222,6 @@ namespace System.Threading
                     newNumProcessingWork = (short)(numProcessingWork + 1);
                     numExistingThreads = counts.NumExistingThreads;
                     newNumExistingThreads = Math.Max(numExistingThreads, newNumProcessingWork);
-                    //q: NumProcessingWork NumExistingThreads 的关系是？
 
                     ThreadCounts newCounts = counts;
                     newCounts.NumProcessingWork = newNumProcessingWork;   //q: 增减逻辑

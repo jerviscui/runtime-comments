@@ -426,6 +426,9 @@ namespace System.Threading
         private static extern void QueueWaitCompletionNative(CompleteWaitThreadPoolWorkItem completeWaitWorkItem);
 #endif
 
+        /// <summary>
+        /// 请求工作线程
+        /// </summary>
         internal static void RequestWorkerThread()
         {
             //使用可移植线程池
@@ -495,7 +498,7 @@ namespace System.Threading
         private static extern void GetAvailableThreadsNative(out int workerThreads, out int completionPortThreads);
 
         /// <summary>
-        /// 通知 VM 任务执行完成。同时也用于询问 HillClimbing 是否将线程返回到线程池。
+        /// 通知 VM 任务执行完成。
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal static bool NotifyWorkItemComplete(object? threadLocalCompletionCountObject, int currentTimeMs)
